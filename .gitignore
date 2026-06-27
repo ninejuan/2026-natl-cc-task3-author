@@ -1,0 +1,20 @@
+# 빌드 산출물 (바이너리)
+build/*
+!build/.gitkeep
+
+# 부하 주입 로그
+logs/*
+!logs/.gitkeep
+
+# Go
+*.exe
+vendor/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
