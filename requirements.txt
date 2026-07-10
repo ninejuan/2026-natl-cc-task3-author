@@ -1,0 +1,2 @@
+# loadgen 은 aiohttp 만 필요. grader 는 표준 라이브러리만 사용한다.
+aiohttp>=3.9,<4.0
