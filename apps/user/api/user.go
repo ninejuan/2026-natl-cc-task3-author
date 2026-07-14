@@ -2,10 +2,23 @@ package api
 
 import (
 	"database/sql"
+	"math/rand"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+// sleepEnabled — ENABLE_400MS_SLEEP=true 면 2025 지급 바이너리의 GET 지연을 재현한다.
+var sleepEnabled = os.Getenv("ENABLE_400MS_SLEEP") == "true"
+
+// maybeSleep — 2025 바이너리와 동일하게 40% 확률로 400ms 잠든다.
+func maybeSleep() {
+	if sleepEnabled && rand.Intn(100) < 40 {
+		time.Sleep(400 * time.Millisecond)
+	}
+}
 
 // UserRequest — POST /v1/user 본문 계약.
 // requestid·uuid 는 변조 방지 계약이라 그대로 에코한다.
@@ -59,6 +72,8 @@ func (h *Handler) PostUser(c *gin.Context) {
 
 // GetUser — email 로 조회. requestid·uuid 는 에코.
 func (h *Handler) GetUser(c *gin.Context) {
+	maybeSleep()
+
 	email := c.Query("email")
 	if email == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email required"})

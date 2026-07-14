@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -13,6 +15,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// sleepEnabled — ENABLE_400MS_SLEEP=true 면 2025 지급 바이너리의 GET 지연을 재현한다.
+var sleepEnabled = os.Getenv("ENABLE_400MS_SLEEP") == "true"
+
+// maybeSleep — 2025 바이너리와 동일하게 40% 확률로 400ms 잠든다.
+func maybeSleep() {
+	if sleepEnabled && rand.Intn(100) < 40 {
+		time.Sleep(400 * time.Millisecond)
+	}
+}
 
 // ProductRequest — POST /v1/product 본문 계약.
 type ProductRequest struct {
@@ -66,6 +78,8 @@ func (h *Handler) PostProduct(c *gin.Context) {
 // GetProduct — id 로 조회. 동일 id 반복 요청이 빈번하므로(SPEC) 캐싱 여지가 있으나,
 // 캐싱은 인프라(CloudFront/앱 앞단) 책임이라 앱은 매번 조회한다.
 func (h *Handler) GetProduct(c *gin.Context) {
+	maybeSleep()
+
 	id := c.Query("id")
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
