@@ -152,6 +152,57 @@ def load_node_samples(path):
     return sum(counts) / len(counts), len(counts)
 
 
+def compute_phase_breakdown(recs):
+    """페이즈별 api 지표. 채점에는 쓰지 않고 어느 구간에서 무너졌는지 보기 위한 진단.
+
+    loadgen 이 시나리오로 주입할 때만 phase 필드가 남으므로, 없으면 빈 결과다.
+    """
+    phases = []
+    for r in recs:
+        p = r.get("phase")
+        if p and p not in phases:
+            phases.append(p)
+    if not phases:
+        return []
+
+    out = []
+    for p in phases:
+        row = {"phase": p, "apis": {}}
+        for api in ("user", "product", "stress"):
+            rows = [
+                r
+                for r in recs
+                if r.get("phase") == p
+                and r.get("api") == api
+                and r.get("kind") == "normal"
+            ]
+            if not rows:
+                continue
+            total = len(rows)
+            avail_ok = sum(
+                1
+                for r in rows
+                if is_2xx(r.get("status", 0))
+                and r.get("latency_s", 1e9) <= AVAILABILITY_TIMEOUT
+            )
+            slo = SLO_SECONDS[api]
+            perf_ok = sum(
+                1
+                for r in rows
+                if is_2xx(r.get("status", 0)) and r.get("latency_s", 1e9) <= slo
+            )
+            lengths = sorted({r["length"] for r in rows if "length" in r})
+            row["apis"][api] = {
+                "total": total,
+                "availability": avail_ok / total * 100.0,
+                "performance": perf_ok / total * 100.0,
+                "lengths": lengths,
+            }
+        if row["apis"]:
+            out.append(row)
+    return out
+
+
 def compute_cost_score(avg_nodes, ap):
     """cost ratio 점수 + ratio. 게이트/하한 반영."""
     if avg_nodes is None:
@@ -184,7 +235,9 @@ def find_latest_log(logdir, student_id):
     return matches[-1] if matches else None
 
 
-def render_results(student_id, ap, image_rate, exc_rate, cost_score, ratio, cost_note):
+def render_results(
+    student_id, ap, image_rate, exc_rate, cost_score, ratio, cost_note, phases=None
+):
     """results_<비번호>.log 본문 생성 (guide.md 5장 키 매핑)."""
     avail_score = sum(
         step_score(ap[a]["availability"], AP_THRESHOLDS, AP_STEP_POINT)
@@ -231,6 +284,17 @@ def render_results(student_id, ap, image_rate, exc_rate, cost_score, ratio, cost
     )
     lines.append(f"  note            : {cost_note}")
     lines.append("")
+    if phases:
+        lines.append("## (진단) 페이즈별 내역 — 채점 대상 아님")
+        for row in phases:
+            lines.append(f"[{row['phase']}]")
+            for api, d in row["apis"].items():
+                lens = ",".join(str(v) for v in d["lengths"]) if d["lengths"] else "-"
+                lines.append(
+                    f"  {api:8s} n={d['total']:>5}  avail={d['availability']:6.2f}%  "
+                    f"perf={d['performance']:6.2f}%  length={lens}"
+                )
+        lines.append("")
     lines.append("## 총점")
     lines.append(f"TOTAL             : {total:.1f}/40.0")
     return "\n".join(lines) + "\n", total
@@ -274,11 +338,19 @@ def main():
     ap = compute_availability_performance(recs)
     image_rate, image_n = compute_image_rate(recs)
     exc_rate, exc_n = compute_exception_rate(recs)
+    phases = compute_phase_breakdown(recs)
     avg_nodes, node_samples = load_node_samples(nodes_log)
     cost_score, ratio, cost_note = compute_cost_score(avg_nodes, ap)
 
     body, total = render_results(
-        args.student_id, ap, image_rate, exc_rate, cost_score, ratio, cost_note
+        args.student_id,
+        ap,
+        image_rate,
+        exc_rate,
+        cost_score,
+        ratio,
+        cost_note,
+        phases=phases,
     )
 
     out_path = args.out or str(Path(args.logdir) / f"results_{args.student_id}.log")

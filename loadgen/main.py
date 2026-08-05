@@ -30,6 +30,8 @@ from pathlib import Path
 
 import aiohttp
 
+from scenario import load_scenario
+
 # ---- 로그 스키마 (grader 와 공유하는 계약) --------------------------------
 # 한 줄당 JSON 객체:
 #   ts        float  요청 시작 (epoch)
@@ -79,17 +81,42 @@ def pick_weighted(mapping):
 
 
 class LoadGen:
-    def __init__(self, args, log_fp):
+    def __init__(self, args, log_fp, scenario=None):
         self.args = args
         self.log_fp = log_fp
+        self.scenario = scenario
         self.base = args.endpoint.rstrip("/")
         self.sem = asyncio.Semaphore(args.concurrency)
         self.sent = 0
         self.lock = asyncio.Lock()
+        self.start_monotonic = None
+        self.phase_name = None
         # 업로드된 이미지 키를 기억해 /images 다운로드에 사용.
         self.image_keys = []
         # product id 풀 (GET 반복 조회 재현).
         self.product_ids = [rand_id(8) for _ in range(50)]
+
+    def current_profile(self):
+        """현재 시점의 (total_rps, api_mix, kind_mix, stress_lengths, phase_name).
+
+        시나리오가 있으면 경과 시간에 해당하는 페이즈 값을 쓰고, 없으면 기존
+        multiplier 기반 전역 상수로 동작한다(하위 호환).
+        """
+        if self.scenario is None:
+            return (
+                BASELINE_RPS * self.args.multiplier,
+                API_MIX,
+                KIND_MIX,
+                STRESS_LENGTHS,
+                "flat",
+            )
+        elapsed = (
+            0.0
+            if self.start_monotonic is None
+            else time.monotonic() - self.start_monotonic
+        )
+        p = self.scenario.phase_at(elapsed)
+        return p.total_rps, p.api_mix, p.kind_mix, p.stress_lengths, p.name
 
     async def write(self, rec):
         rec["schema"] = SCHEMA_VERSION
@@ -103,10 +130,14 @@ class LoadGen:
             return {}
         return {"User-Agent": DEFAULT_UA}
 
-    async def _record(self, session, api, kind, method, path, **kw):
+    async def _record(self, session, api, kind, method, path, stress_length=None, **kw):
         url = self.base + path
         headers = self._headers(kind)
         kw.setdefault("headers", {}).update(headers)
+        # aiohttp 는 headers 가 비어도 UA 를 자동 삽입한다. 악성 트래픽은 UA 부재가
+        # 핵심이므로 자동 삽입을 명시적으로 막아야 WAF NoUserAgent_HEADER 가 걸린다.
+        if kind == "malicious_header":
+            kw["skip_auto_headers"] = ["User-Agent"]
         t0 = time.perf_counter()
         status = 0
         err = None
@@ -130,6 +161,10 @@ class LoadGen:
             "status": status,
             "latency_s": round(latency, 4),
         }
+        if self.phase_name:
+            rec["phase"] = self.phase_name
+        if stress_length is not None:
+            rec["length"] = stress_length
         if err:
             rec["error"] = err
         await self.write(rec)
@@ -216,10 +251,20 @@ class LoadGen:
         if key:
             self.image_keys.append(key)
 
-    async def do_stress_normal(self, session):
+    async def do_stress_normal(self, session, lengths=None):
         rid, uid = rand_id(), str(uuid.uuid4())
-        body = {"requestid": rid, "uuid": uid, "length": random.choice(STRESS_LENGTHS)}
-        await self._record(session, "stress", "normal", "POST", "/v1/stress", json=body)
+        pool = lengths or STRESS_LENGTHS
+        length = random.choice(pool)
+        body = {"requestid": rid, "uuid": uid, "length": length}
+        await self._record(
+            session,
+            "stress",
+            "normal",
+            "POST",
+            "/v1/stress",
+            stress_length=length,
+            json=body,
+        )
 
     async def do_image(self, session):
         # 업로드된 키가 있으면 그걸, 없으면 임의 키(존재하지 않을 수 있음)를 요청.
@@ -249,16 +294,16 @@ class LoadGen:
         q = f"/v1/user?email={rand_id(6)}@example.com&requestid={rid}&uuid={uid}"
         await self._record(session, "user", "malicious_header", "GET", q)
 
-    async def dispatch(self, session):
-        kind = pick_weighted(KIND_MIX)
+    async def dispatch(self, session, api_mix, kind_mix, stress_lengths):
+        kind = pick_weighted(kind_mix)
         if kind == "normal":
-            api = pick_weighted(API_MIX)
+            api = pick_weighted(api_mix)
             if api == "user":
                 await self.do_user_normal(session)
             elif api == "product":
                 await self.do_product_normal(session)
             else:
-                await self.do_stress_normal(session)
+                await self.do_stress_normal(session, stress_lengths)
         elif kind == "image":
             await self.do_image(session)
         elif kind == "bad_email":
@@ -268,47 +313,63 @@ class LoadGen:
         elif kind == "malicious_header":
             await self.do_malicious(session)
 
-    async def worker(self, session, deadline, target_rps):
-        # 각 워커는 목표 RPS/concurrency 를 나눠 가지며 포아송 간격으로 요청.
-        interval = self.args.concurrency / max(target_rps, 1e-6)
+    async def worker(self, session, deadline, rps_scale=1.0):
+        """페이즈 프로파일을 매 요청마다 조회해 rps/mix/length 를 따라간다.
+
+        rps_scale 은 웜업(0.3배) 처럼 전체 강도를 일시적으로 낮출 때 쓴다.
+        """
         while time.monotonic() < deadline:
+            total_rps, api_mix, kind_mix, lengths, phase = self.current_profile()
+            if phase != self.phase_name:
+                self.phase_name = phase
+            target_rps = max(total_rps * rps_scale, 1e-6)
             async with self.sem:
-                await self.dispatch(session)
+                await self.dispatch(session, api_mix, kind_mix, lengths)
                 self.sent += 1
+            interval = self.args.concurrency / target_rps
             await asyncio.sleep(
                 random.expovariate(1.0 / interval) if interval > 0 else 0
             )
 
     async def run(self):
-        target_rps = BASELINE_RPS * self.args.multiplier
         timeout = aiohttp.ClientTimeout(total=self.args.request_timeout)
         connector = aiohttp.TCPConnector(
             limit=self.args.concurrency * 2, ssl=self.args.verify_ssl
         )
-        deadline = time.monotonic() + self.args.duration
 
-        print(
-            f"[loadgen] endpoint={self.base} duration={self.args.duration}s "
-            f"multiplier={self.args.multiplier} target_rps≈{target_rps:.0f} "
-            f"concurrency={self.args.concurrency}"
-        )
+        if self.scenario is not None:
+            duration = self.scenario.duration
+            warmup = self.scenario.warmup
+            print(f"[loadgen] endpoint={self.base}")
+            print(self.scenario.summary())
+        else:
+            duration = self.args.duration
+            warmup = self.args.warmup
+            print(
+                f"[loadgen] endpoint={self.base} duration={duration}s "
+                f"multiplier={self.args.multiplier} "
+                f"target_rps≈{BASELINE_RPS * self.args.multiplier:.0f} "
+                f"concurrency={self.args.concurrency}"
+            )
+
         async with aiohttp.ClientSession(
             timeout=timeout, connector=connector
         ) as session:
             # 웜업: 앱 준비 대기.
-            if self.args.warmup > 0:
-                warm_deadline = time.monotonic() + self.args.warmup
+            if warmup > 0:
+                self.start_monotonic = time.monotonic()
+                warm_deadline = time.monotonic() + warmup
                 await asyncio.gather(
                     *[
-                        self.worker(session, warm_deadline, target_rps * 0.3)
+                        self.worker(session, warm_deadline, rps_scale=0.3)
                         for _ in range(max(1, self.args.concurrency // 4))
                     ]
                 )
+            phase_schedule_origin = time.monotonic()
+            self.start_monotonic = phase_schedule_origin
+            deadline = phase_schedule_origin + duration
             await asyncio.gather(
-                *[
-                    self.worker(session, deadline, target_rps)
-                    for _ in range(self.args.concurrency)
-                ]
+                *[self.worker(session, deadline) for _ in range(self.args.concurrency)]
             )
         print(f"[loadgen] done. sent={self.sent} log={self.log_fp.name}")
 
@@ -324,6 +385,12 @@ def parse_args():
         "--student-id",
         default=os.getenv("STUDENT_ID", "00000"),
         help="비번호 (로그 파일명에 사용)",
+    )
+    p.add_argument(
+        "--scenario",
+        default=None,
+        help="시나리오 이름(scenarios/<name>.json) 또는 경로. 지정 시 "
+        "duration/warmup/concurrency/mix/length 를 시나리오가 결정한다.",
     )
     p.add_argument("--duration", type=float, default=300, help="총 주입 시간(초)")
     p.add_argument("--warmup", type=float, default=15, help="웜업 시간(초)")
@@ -354,7 +421,12 @@ def main():
     args = parse_args()
     if not args.endpoint:
         raise SystemExit("error: --endpoint (또는 TARGET_ENDPOINT) 가 필요합니다.")
-    if not (1.0 <= args.multiplier <= 2.0):
+
+    scenario = None
+    if args.scenario:
+        scenario = load_scenario(args.scenario)
+        args.concurrency = scenario.concurrency
+    elif not (1.0 <= args.multiplier <= 2.0):
         print(
             f"[warn] multiplier={args.multiplier} 는 권장 범위(1.0~2.0)를 벗어납니다."
         )
@@ -364,7 +436,7 @@ def main():
     log_path = logdir / f"requests_{args.student_id}_{now_iso()}.jsonl"
 
     with open(log_path, "w", encoding="utf-8") as fp:
-        gen = LoadGen(args, fp)
+        gen = LoadGen(args, fp, scenario=scenario)
         asyncio.run(gen.run())
     print(f"[loadgen] raw log written: {log_path}")
     # grader 가 최신 로그를 쉽게 찾도록 심볼릭 최신 포인터 갱신.

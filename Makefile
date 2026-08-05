@@ -14,11 +14,17 @@ MULTIPLIER  ?= 1.0
 CONCURRENCY ?= 64
 PYTHON      ?= python3
 
+# 시나리오 실행 파라미터
+SCENARIO      ?= 2025-plus20
+NODE_SOURCE   ?= kubectl
+NODES         ?= yes
+SCENARIO_LIST := $(basename $(notdir $(wildcard scenarios/*.json)))
+
 # seed S3 업로드 파라미터
 S3_BUCKET   ?=
 AWS_REGION  ?= ap-northeast-2
 
-.PHONY: build publish clean deps loadgen nodes grade seed-s3
+.PHONY: build publish clean deps loadgen nodes grade seed-s3 race scenarios mock
 
 build:
 	@mkdir -p $(BUILD_DIR)
@@ -49,6 +55,26 @@ nodes:
 # 채점. loadgen/nodes 결과 로그를 읽어 results_<비번호>.log 생성.
 grade:
 	$(PYTHON) grader/main.py --student-id "$(STUDENT_ID)"
+
+# ---- 시나리오 기반 경기 시뮬 ------------------------------------------------
+# 원샷: 노드샘플러+주입 병렬 → 채점 → runs/<시나리오>_<시각>/ 아카이브.
+#   make race SCENARIO=2025-plus20 ENDPOINT=https://xxx STUDENT_ID=12345
+#   make race SCENARIO=smoke,2025-replay ENDPOINT=https://xxx   (순차)
+# 로컬 목 서버로 하네스만 확인할 때는 NODES=no 로 노드샘플링을 끈다.
+race:
+	@test -n "$(ENDPOINT)" || { echo "error: ENDPOINT 를 지정하세요 (예: make race SCENARIO=2025-plus20 ENDPOINT=https://xxx)"; exit 1; }
+	$(PYTHON) loadgen/race.py \
+		--scenario "$(SCENARIO)" --endpoint "$(ENDPOINT)" \
+		--student-id "$(STUDENT_ID)" --node-source "$(NODE_SOURCE)" \
+		$(if $(filter no,$(NODES)),--no-nodes,)
+
+# 사용 가능한 시나리오와 계산된 stress rps 확인.
+scenarios:
+	@$(PYTHON) loadgen/scenario.py $(SCENARIO_LIST)
+
+# 하네스 검증용 목 서버 (실제 앱 아님). 별도 터미널에서 띄운다.
+mock:
+	$(PYTHON) loadgen/mockserver.py --port 18080 --get-sleep-prob 0.4
 
 # ---- seed 데이터 -----------------------------------------------------------
 # 앱별로 커밋된 자료: apps/user/seed/load_user.sql, apps/product/seed/load_product.sql,
