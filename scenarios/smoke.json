@@ -1,0 +1,16 @@
+{
+  "name": "smoke",
+  "description": "배포 직후 90초 연결 확인용 경량 시나리오. 엔드포인트/WAF 403/404/이미지 다운로드/DB 연결이 다 살아있는지만 본다. 점수 판단용이 아니다.",
+  "warmup": 5,
+  "concurrency": 16,
+  "api_mix": { "user": 0.35, "product": 0.45, "stress": 0.20 },
+  "kind_mix": {
+    "normal": 0.70,
+    "image": 0.12,
+    "bad_email": 0.06,
+    "unknown_path": 0.06,
+    "malicious_header": 0.06
+  },
+  "stress_lengths": [100000, 300000],
+  "phases": [{ "name": "smoke", "duration": 90, "total_rps": 12 }]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "2025-plus20",
+  "description": "작년 대비 stress +20% (피크 18.7rps). 출제자가 작년보다 조금 세게 낼 경우를 상정한 주력 검증 시나리오. 2노드로 버티는지, HPA/CA가 3노드로 올라가는지를 본다.",
+  "warmup": 15,
+  "concurrency": 80,
+  "api_mix": { "user": 0.30, "product": 0.45, "stress": 0.25 },
+  "kind_mix": {
+    "normal": 0.82,
+    "image": 0.08,
+    "bad_email": 0.04,
+    "unknown_path": 0.03,
+    "malicious_header": 0.03
+  },
+  "stress_lengths": [300000, 600000, 900000],
+  "phases": [
+    { "name": "ramp", "duration": 60, "total_rps": 50 },
+    { "name": "steady", "duration": 180, "total_rps": 74 },
+    { "name": "peak", "duration": 150, "total_rps": 91 },
+    { "name": "taper", "duration": 60, "total_rps": 58 }
+  ]
+}

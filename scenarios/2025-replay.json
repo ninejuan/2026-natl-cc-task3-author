@@ -1,0 +1,21 @@
+{
+  "name": "2025-replay",
+  "description": "작년(2025) 실측 트래픽 재현. stress 피크 15.6rps / 평균 9.0rps, 후반 피크 구간 포함. 우리 전략이 작년 수준을 만점으로 처리하는지 확인하는 기준선.",
+  "warmup": 15,
+  "concurrency": 64,
+  "api_mix": { "user": 0.30, "product": 0.45, "stress": 0.25 },
+  "kind_mix": {
+    "normal": 0.82,
+    "image": 0.08,
+    "bad_email": 0.04,
+    "unknown_path": 0.03,
+    "malicious_header": 0.03
+  },
+  "stress_lengths": [200000, 500000, 900000],
+  "phases": [
+    { "name": "ramp", "duration": 60, "total_rps": 44 },
+    { "name": "steady", "duration": 180, "total_rps": 62 },
+    { "name": "peak", "duration": 120, "total_rps": 76 },
+    { "name": "taper", "duration": 60, "total_rps": 50 }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "collapse-test",
+  "description": "의도적 붕괴 유도. stress 피크 36rps + length 200만(2 vCPU 안정 상한의 2배)으로 3노드로도 버티는지, 어디서 무너지는지 한계를 측정한다. 만점 목표가 아니라 한계 탐색용.",
+  "warmup": 10,
+  "concurrency": 96,
+  "api_mix": { "user": 0.25, "product": 0.40, "stress": 0.35 },
+  "kind_mix": {
+    "normal": 0.85,
+    "image": 0.06,
+    "bad_email": 0.03,
+    "unknown_path": 0.03,
+    "malicious_header": 0.03
+  },
+  "stress_lengths": [1000000, 2000000],
+  "phases": [
+    { "name": "ramp", "duration": 45, "total_rps": 50 },
+    { "name": "heavy", "duration": 150, "total_rps": 87 },
+    { "name": "overload", "duration": 120, "total_rps": 122, "stress_lengths": [2000000] }
+  ]
+}
