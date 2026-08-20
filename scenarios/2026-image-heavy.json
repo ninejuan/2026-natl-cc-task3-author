@@ -1,0 +1,22 @@
+{
+  "name": "2026-image-heavy",
+  "description": "2026 주력 검증. 신규 이미지(S3) 축을 집중적으로 찌른다. warmup 30s 동안 product PUT 으로 이미지 풀을 채운 뒤(업로드->다운로드 순서 의존 재현), image 다운로드 비중을 22%로 올려 CloudFront->S3 직결 경로와 WAF 업로드 오탐을 검증한다. 규모는 2025x1.5(peak 120, spike 140). stress length 95만으로 2vCPU 안정 상한을 눌러 HPA(85%)->CA 3노드 전환을 강제하되 붕괴선(200만)은 넘지 않는다. 만점(성능 게이트 통과 + cost ratio 관리)을 빡센 부하에서 지키는지 보는 시나리오.",
+  "warmup": 30,
+  "concurrency": 128,
+  "api_mix": { "user": 0.28, "product": 0.50, "stress": 0.22 },
+  "kind_mix": {
+    "normal": 0.72,
+    "image": 0.22,
+    "bad_email": 0.02,
+    "unknown_path": 0.02,
+    "malicious_header": 0.02
+  },
+  "stress_lengths": [300000, 600000, 950000],
+  "phases": [
+    { "name": "ramp", "duration": 60, "total_rps": 60 },
+    { "name": "steady", "duration": 180, "total_rps": 95 },
+    { "name": "peak", "duration": 150, "total_rps": 120, "stress_lengths": [950000] },
+    { "name": "spike", "duration": 60, "total_rps": 140, "stress_lengths": [950000] },
+    { "name": "taper", "duration": 60, "total_rps": 70 }
+  ]
+}

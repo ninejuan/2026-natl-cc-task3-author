@@ -10,9 +10,8 @@
   - image           : /images/<key> 다운로드 (image 처리율)
   - bad_email       : 잘못된 이메일 POST /v1/user → 선수 시스템이 403 이어야 함
   - unknown_path    : 미존재 경로 → 404 이어야 함
-  - malicious_header: User-Agent 누락 요청 → WAF 가 403 차단해야 함
-                      (근거: 2025 WAF 로그 AWSManagedRulesCommonRuleSet /
-                       NoUserAgent_HEADER 실측 BLOCK)
+  - malicious_header: User-Agent 에 공격 시그니처(hacker) → WAF 가 403 차단해야 함
+                       (근거: 2025 WAF 로그의 악성 UA 실측 BLOCK)
 
 트래픽 규모는 2025-game ALB 로그 기준을 1.0~2.0배로 조절 가능(--multiplier).
 """
@@ -62,6 +61,7 @@ KIND_MIX = {
 BASELINE_RPS = 40  # multiplier 1.0 일 때 목표 RPS (2025 ALB 평균 구간 근사)
 
 DEFAULT_UA = "wsk-grader/1.0 (+aiohttp)"
+MALICIOUS_UA = "hacker"
 BAD_EMAILS = ["gildong", "gildong@example", "no-at-sign.com", "a@b", "@nodomain"]
 STRESS_LENGTHS = [200_000, 500_000, 1_000_000]  # 부하량 파라미터 (요청별)
 
@@ -125,19 +125,14 @@ class LoadGen:
             self.log_fp.write(line + "\n")
 
     def _headers(self, kind):
-        # 악성: User-Agent 헤더를 아예 제거 (NoUserAgent_HEADER 재현).
         if kind == "malicious_header":
-            return {}
+            return {"User-Agent": MALICIOUS_UA}
         return {"User-Agent": DEFAULT_UA}
 
     async def _record(self, session, api, kind, method, path, stress_length=None, **kw):
         url = self.base + path
         headers = self._headers(kind)
         kw.setdefault("headers", {}).update(headers)
-        # aiohttp 는 headers 가 비어도 UA 를 자동 삽입한다. 악성 트래픽은 UA 부재가
-        # 핵심이므로 자동 삽입을 명시적으로 막아야 WAF NoUserAgent_HEADER 가 걸린다.
-        if kind == "malicious_header":
-            kw["skip_auto_headers"] = ["User-Agent"]
         t0 = time.perf_counter()
         status = 0
         err = None
@@ -289,7 +284,6 @@ class LoadGen:
         await self._record(session, "user", "unknown_path", "GET", "/v1/none")
 
     async def do_malicious(self, session):
-        # 정상처럼 보이는 요청이지만 User-Agent 를 제거 → WAF 가 403 차단해야 함.
         rid, uid = rand_id(), str(uuid.uuid4())
         q = f"/v1/user?email={rand_id(6)}@example.com&requestid={rid}&uuid={uid}"
         await self._record(session, "user", "malicious_header", "GET", q)

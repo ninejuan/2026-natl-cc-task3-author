@@ -11,7 +11,7 @@ race/loadgen/grader 파이프라인이 40점 전 항목을 집계하는지 확�
   POST /v1/stress       : 201 즉시 (--stress-delay 로 지연 주입 가능)
   GET  /images/<key>    : 업로드된 키면 200, 아니면 404
   그 외 경로            : 404
-  User-Agent 없으면     : 403 (NoUserAgent_HEADER 재현)
+  User-Agent 없거나 공격 시그니처(hacker 등) 이면 : 403 (WAF BlockedUserAgents 재현)
 """
 
 import argparse
@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
+BLOCKED_UA_RE = re.compile(r"hack|attack|malicious|bot|scanner|sqlmap|nikto|nmap", re.I)
 
 _uploaded = set()
 _lock = threading.Lock()
@@ -53,7 +54,10 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def _ua_ok(self):
-        return bool(self.headers.get("User-Agent"))
+        ua = self.headers.get("User-Agent")
+        if not ua:
+            return False
+        return not BLOCKED_UA_RE.search(ua)
 
     def _maybe_get_sleep(self):
         import random
